@@ -3694,6 +3694,81 @@ func RunTestCreateSnapshot(t *testing.T, fakeDriverFn func(t *gomock.Controller)
 				}
 			},
 		},
+		{
+			name: "instantAccessDurationMinutes should not block on waitForSnapshotReady when completionPercent < 100",
+			testFunc: func(t *testing.T) {
+				parameter := make(map[string]string)
+				parameter["instantaccessdurationminutes"] = "60"
+				req := &csi.CreateSnapshotRequest{
+					SourceVolumeId: testVolumeID,
+					Name:           "testurl/subscriptions/23/providers/Microsoft.Compute/snapshots/snapshot-name",
+					Parameters:     parameter,
+				}
+				cntl := gomock.NewController(t)
+				defer cntl.Finish()
+				d, _ := fakeDriverFn(cntl)
+				d.setCloud(azure.GetTestCloudWithExtendedLocation(cntl))
+				ctrl := gomock.NewController(t)
+				defer ctrl.Finish()
+				mockSnapshotClient := mock_snapshotclient.NewMockInterface(ctrl)
+				d.getClientFactory().(*mock_azclient.MockClientFactory).EXPECT().GetSnapshotClientForSub(gomock.Any()).Return(mockSnapshotClient, nil).AnyTimes()
+
+				provisioningState := "succeeded"
+				DiskSize := int32(10)
+				snapshotID := "test"
+				completionPercent := float32(50.0)
+				snapshot := &armcompute.Snapshot{
+					Properties: &armcompute.SnapshotProperties{
+						TimeCreated:       &time.Time{},
+						ProvisioningState: &provisioningState,
+						DiskSizeGB:        &DiskSize,
+						CompletionPercent: &completionPercent,
+						CreationData: &armcompute.CreationData{
+							InstantAccessDurationMinutes: ptr.To(int64(60)),
+						},
+					},
+					ID: &snapshotID,
+				}
+
+				mockSnapshotClient.EXPECT().CreateOrUpdate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+				mockSnapshotClient.EXPECT().Get(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+					func(ctx context.Context, resourceGroupName, resourceName string) (*armcompute.Snapshot, error) {
+						if ctx.Err() != nil {
+							return nil, ctx.Err()
+						}
+						return snapshot, nil
+					}).AnyTimes()
+
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+
+				start := time.Now()
+				actualresponse, err := d.CreateSnapshot(ctx, req)
+				elapsed := time.Since(start)
+
+				if elapsed > 10*time.Second {
+					t.Fatalf("CreateSnapshot blocked for %v; instant access snapshots should not wait for completionPercent", elapsed)
+				}
+
+				if err != nil {
+					t.Fatalf("expected no error for instant access snapshot, got: %v", err)
+				}
+
+				tp := timestamppb.New(*snapshot.Properties.TimeCreated)
+				expectedresponse := &csi.CreateSnapshotResponse{
+					Snapshot: &csi.Snapshot{
+						SizeBytes:      volumehelper.GiBToBytes(int64(*snapshot.Properties.DiskSizeGB)),
+						SnapshotId:     *snapshot.ID,
+						SourceVolumeId: req.SourceVolumeId,
+						CreationTime:   tp,
+						ReadyToUse:     true,
+					},
+				}
+				if !reflect.DeepEqual(expectedresponse, actualresponse) {
+					t.Errorf("actualresponse: (%+v), expectedresponse: (%+v)\n", actualresponse, expectedresponse)
+				}
+			},
+		},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, tc.testFunc)
