@@ -1368,10 +1368,12 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 		}
 	}
 
-	if d.shouldWaitForSnapshotReady {
+	if d.shouldWaitForSnapshotReady && instantAccessDurationMinutes == nil {
 		if err := d.waitForSnapshotReady(ctx, subsID, resourceGroup, snapshotName, waitForSnapshotReadyInterval, waitForSnapshotReadyTimeout); err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("waitForSnapshotReady(%s, %s, %s) failed with %v", subsID, resourceGroup, snapshotName, err))
 		}
+	} else if instantAccessDurationMinutes != nil {
+		klog.V(2).Infof("skip waiting for snapshot(%s) ready since instantAccessDurationMinutes(%d) is set", snapshotName, *instantAccessDurationMinutes)
 	}
 	klog.V(2).Infof("create snapshot(%s) under rg(%s) region(%s) successfully", snapshotName, resourceGroup, d.cloud.Location)
 
